@@ -1,37 +1,48 @@
-// server.js
-const express = require("express");
-const cors = require("cors");
+import express from "express";
+import fetch from "node-fetch";
+import cheerio from "cheerio";
+import { Readability } from "@mozilla/readability";
+import { JSDOM } from "jsdom";
 
 const app = express();
-app.use(cors());
 
-// Route: GET /fetch?url=<targetURL>
 app.get("/fetch", async (req, res) => {
-  const targetUrl = req.query.url;
-  if (!targetUrl) {
-    return res.status(400).send("Missing URL");
-  }
+  const url = req.query.url;
+  if (!url) return res.status(400).send("Missing URL");
 
   try {
-    // Use native fetch (available in Node 20+)
-    const response = await fetch(targetUrl);
+    const response = await fetch(url);
+    const html = await response.text();
 
-    // Optional: check content type
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("text/html")) {
-      return res.status(415).send("Unsupported content type");
+    // Use Readability.js to extract main content
+    const dom = new JSDOM(html, { url });
+    const reader = new Readability(dom.window.document);
+    const article = reader.parse();
+
+    let textContent = article?.textContent?.trim() || "";
+
+    // Refined detection logic
+    if (!textContent || textContent.length < 300) {
+      if (html.includes("Access denied") || html.includes("Membership required")) {
+        return res.send("Summary unavailable: content is behind a paywall.");
+      }
+      if (html.includes("You must log in") || html.includes("Login required")) {
+        return res.send("Summary unavailable: login required to view this content.");
+      }
+
+      // Fallback: extract raw body text with Cheerio
+      const $ = cheerio.load(html);
+      const fallbackText = $("body").text().replace(/\s+/g, " ").trim();
+      return res.send(fallbackText || "Summary unavailable: site did not return readable content.");
     }
 
-    const html = await response.text();
-    res.send(html);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(textContent);
+
   } catch (err) {
-    console.error("Fetch error:", err);
-    res.status(500).send("Error fetching page");
+    console.error("Proxy error:", err);
+    res.status(500).send("Failed to fetch content");
   }
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Proxy running on port ${PORT}`);
-});
+app.listen(3000, () => console.log("Proxy running on port 3000"));
